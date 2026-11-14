@@ -11,7 +11,7 @@ Netlify : dépose seulement `index.html` (SERVER_URL pointe déjà vers wss://no
 ## Ajouts
 - Profil : pdp (upload), police du pseudo, clic sur un joueur du classement = son profil.
 - Cosmétiques : pièce et cape (Base / Doré / Galaxie / Perso upload). Images PNG/JPEG/WebP, recadrées 128-160 px côté client, 60 Ko max, magic bytes vérifiés côté serveur.
-- Anti-triche serveur : temps client comparés à l'horloge serveur (ticks solo + duel), scores rejetés, 6 points de suspicion = ban auto, max 30 duels/h contre le même adversaire, 3 comptes/IP/jour, anti-flood, limite connexions/IP.
+- Anti-triche serveur (désactivé par défaut, activer avec ANTICHEAT=1) : temps client comparés à l'horloge serveur (ticks solo + duel), scores rejetés, 6 points de suspicion = ban auto, max 30 duels/h contre le même adversaire, 3 comptes/IP/jour, anti-flood, limite connexions/IP.
 - Anti-triche client : jeu isolé dans une closure (pas d'accès console), détection extensions/userscripts/devtools/horloge truquée/fonctions natives modifiées → ranked et records bloqués.
 - Variables Render : `ALLOWED_ORIGINS=https://TON-SITE.netlify.app` (recommandé), `ADMIN_KEY=...`, `DB_FILE` (disque persistant).
 - Admin : `/admin/flags?key=`, `/admin/ban?key=&pseudo=`, `/admin/unban?key=&pseudo=`.

@@ -4,6 +4,7 @@ const {WebSocketServer}=require("ws");
 const PORT=process.env.PORT||3000;
 const DB_FILE=process.env.DB_FILE||path.join(__dirname,"data.json");
 const WINS_NEEDED=2;
+const ANTICHEAT=process.env.ANTICHEAT==="1"; // désactivé par défaut
 const ALLOWED=(process.env.ALLOWED_ORIGINS||"").split(",").map(x=>x.trim()).filter(Boolean); // ex: https://monsite.netlify.app
 const ADMIN_KEY=process.env.ADMIN_KEY||"";
 const ALLOW_SAME_IP=process.env.BLOCK_SAME_IP!=="1"; // mettre BLOCK_SAME_IP=1 pour interdire les duels entre même IP
@@ -76,6 +77,7 @@ function imgParse(d){
 }
 /* ---------- Anti-triche serveur ---------- */
 function flag(ws,why,w=1){
+  if(!ANTICHEAT)return;
   const u=ws&&db.users[ws.user];if(!u)return;
   u.flags=(u.flags||0)+w;(u.log=u.log||[]).push({at:Date.now(),why:String(why).slice(0,80),w});if(u.log.length>30)u.log.shift();
   if(u.flags>=BAN_AT&&!u.banned){u.banned=true;u.bannedAt=Date.now();
@@ -128,7 +130,7 @@ function tryMatch(){
   for(let i=0;i<queue.length;i++)for(let j=i+1;j<queue.length;j++){
     const a=queue[i],b=queue[j];
     if(!ALLOW_SAME_IP&&a.ip===b.ip)continue;
-    if(pairCount(a.user,b.user)>=MAX_PAIR)continue;
+    if(ANTICHEAT&&pairCount(a.user,b.user)>=MAX_PAIR)continue;
     queue=queue.filter(w=>w!==a&&w!==b);startMatch(a,b);return tryMatch();
   }
 }
@@ -216,7 +218,7 @@ wss.on("connection",(ws,req)=>{
         if(pw.length<4||pw.length>100)return send(ws,{t:"err",msg:"Mot de passe : 4 caractères minimum."});
         if(db.users[key(p)])return send(ws,{t:"err",msg:"Ce pseudo est déjà pris."});
         const iph=sha(ip).slice(0,16);
-        if(Object.values(db.users).filter(x=>x.iph===iph&&Date.now()-x.created<864e5).length>=MAX_ACC_IP)return send(ws,{t:"err",msg:"Trop de comptes créés depuis ta connexion aujourd'hui."});
+        if(ANTICHEAT&&Object.values(db.users).filter(x=>x.iph===iph&&Date.now()-x.created<864e5).length>=MAX_ACC_IP)return send(ws,{t:"err",msg:"Trop de comptes créés depuis ta connexion aujourd'hui."});
         const u={pseudo:p,...hashPw(pw),wins:0,losses:0,best:0,rr:0,created:Date.now(),iph,font:"inter",coin:"base",cape:"none"};
         db.users[key(p)]=u;save();login(ws,u,newSession(p));break}
       case"login":{
@@ -247,7 +249,7 @@ wss.on("connection",(ws,req)=>{
         let tt=Number(d.time);if(!isFinite(tt)||tt<0)return;
         const el=(Date.now()-m.goAt)/1000;
         if(tt>el+2){flag(ws,"tick>serveur "+tt.toFixed(1)+"/"+el.toFixed(1),2);tt=el}
-        if(tt<ws.lastTick-0.01){flag(ws,"tick recule",1);return}
+        if(ANTICHEAT&&tt<ws.lastTick-0.01){flag(ws,"tick recule",1);return}
         ws.lastTick=tt;
         send(m.p[1-ws.idx],{t:"opp",time:tt,dead:false});break}
       case"result":{
@@ -255,7 +257,7 @@ wss.on("connection",(ws,req)=>{
         let t=Number(d.time);if(!isFinite(t)||t<0)return;
         const max=(Date.now()-m.goAt)/1000+1.5;
         if(t>max){flag(ws,"result>serveur "+t.toFixed(1)+"/"+max.toFixed(1),2);t=max}
-        if(t>ws.lastTick+3){flag(ws,"result sans ticks "+t.toFixed(1)+"/"+ws.lastTick.toFixed(1),2);t=Math.min(t,ws.lastTick+3)}
+        if(ANTICHEAT&&t>ws.lastTick+3){flag(ws,"result sans ticks "+t.toFixed(1)+"/"+ws.lastTick.toFixed(1),2);t=Math.min(t,ws.lastTick+3)}
         m.res[ws.idx]=t;bump(ws.user,t);
         send(m.p[1-ws.idx],{t:"opp",time:t,dead:true});
         if(m.res[0]!=null&&m.res[1]!=null)endRound(m);
@@ -271,7 +273,8 @@ wss.on("connection",(ws,req)=>{
         if(!ws.user||!ws.soloAt||ws.match)return;
         let t=Number(d.time);if(!isFinite(t)||t<=0)return;
         const max=(Date.now()-ws.soloAt)/1000+1.5,lt=ws.soloT||0;ws.soloAt=0;
-        if(t>max||t>lt+3){flag(ws,"score invalide "+t.toFixed(1)+"/"+lt.toFixed(1),2);return send(ws,{t:"scoreRes",best:db.users[ws.user].best,record:false})}
+        if(ANTICHEAT&&(t>max||t>lt+3)){flag(ws,"score invalide "+t.toFixed(1)+"/"+lt.toFixed(1),2);return send(ws,{t:"scoreRes",best:db.users[ws.user].best,record:false})}
+        if(t>max)t=max;
         const rec=bump(ws.user,t);send(ws,{t:"scoreRes",best:db.users[ws.user].best,record:rec});break}
       case"lb":{
         const n=Date.now();if(ws.lbAt&&n-ws.lbAt<700)return;ws.lbAt=n;
