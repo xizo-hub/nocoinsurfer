@@ -594,7 +594,6 @@ const fmtS=s=>String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart
 /* --- Connexion serveur --- */
 function url(){if(SERVER_URL)return SERVER_URL;if(location.protocol==="file:")return null;return(location.protocol==="https:"?"wss://":"ws://")+location.host}
 function send(o){
-  if((o.t==="queue"||o.t==="score")&&ACX.blocked()){if(o.t==="queue")acShow();else toast("Record non enregistré (anti-triche)");return}
   if(ws&&ws.readyState===1)ws.send(JSON.stringify(o))}
 function connect(){
   const u=url();if(!u){setOnl("Hors-ligne (serveur requis)");return}
@@ -635,7 +634,7 @@ function handle(d){
     case"online":online=d.n;setOnl(online+" joueur"+(online>1?"s":"")+" en ligne");break;
     case"authed":
       if(d.token){token=d.token;try{localStorage.setItem(KEY,token)}catch(e){}}
-      setMe(d.me);show("authov",false);$("aerr").textContent="";{const c=ACX.codes();if(c.length)send({t:"ac",codes:c.join(",")})}break;
+      setMe(d.me);show("authov",false);$("aerr").textContent="";break;
     case"authFail":token=null;try{localStorage.removeItem(KEY)}catch(e){}setMe(null);break;
     case"err":$("aerr").textContent=d.msg;$("cerr").textContent=d.msg;saving=false;break;
     case"kicked":token=null;setMe(null);toast("Connecté depuis un autre appareil.");break;
@@ -751,7 +750,7 @@ function acShow(){const c=ACX.codes();
   show("acov")}
 $("acre").onclick=()=>{if(ACX.codes().length)acShow();else{show("acov",false);toast("Vérification OK")}};
 $("accl").onclick=()=>show("acov",false);
-ACX.start(c=>{send({t:"ac",codes:c.join(",")});toast("Anti-triche : élément détecté, ranked et records bloqués.")});
+
 let stN=0;function soloTick(){if(state!=="play"||MM.active||!me)return;const n=Date.now();if(n-stN<1000)return;stN=n;send({t:"stick",time:timeT})}
 
 /* --- Recherche de partie --- */

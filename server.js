@@ -6,19 +6,59 @@ const DB_FILE=process.env.DB_FILE||path.join(__dirname,"data.json");
 const WINS_NEEDED=2;
 const ALLOWED=(process.env.ALLOWED_ORIGINS||"").split(",").map(x=>x.trim()).filter(Boolean); // ex: https://monsite.netlify.app
 const ADMIN_KEY=process.env.ADMIN_KEY||"";
-const ALLOW_SAME_IP=process.env.ALLOW_SAME_IP==="1";
-const BAN_AT=6, MAX_PAIR=6, MAX_ACC_IP=3, MAX_CONN_IP=6;
+const ALLOW_SAME_IP=process.env.BLOCK_SAME_IP!=="1"; // mettre BLOCK_SAME_IP=1 pour interdire les duels entre même IP
+const BAN_AT=6, MAX_PAIR=30, MAX_ACC_IP=3, MAX_CONN_IP=6;
 const FONTS=["inter","orbitron","pacifico","pressstart","bebas","marker","cinzel","righteous"];
 const COINS=["base","gold","galaxy","custom"], CAPES=["none","base","gold","galaxy","custom"];
 const IMG_MAX=60000; // octets
 
 /* ---------- Stockage ---------- */
 let db={users:{},sessions:{},imgs:{}};
-try{db=JSON.parse(fs.readFileSync(DB_FILE,"utf8"))}catch(e){}
-db.imgs=db.imgs||{};
-for(const k in db.users){const u=db.users[k];u.rr=u.rr||0;u.best=u.best||0;u.wins=u.wins||0;u.losses=u.losses||0}
-let saveT=null;
-function save(){if(saveT)return;saveT=setTimeout(()=>{saveT=null;const tmp=DB_FILE+".tmp";fs.writeFileSync(tmp,JSON.stringify(db));fs.renameSync(tmp,DB_FILE)},300)}
+const UP_URL=(process.env.UPSTASH_REDIS_REST_URL||"").replace(/\/$/,""),UP_TOK=process.env.UPSTASH_REDIS_REST_TOKEN||"";
+const REMOTE=!!(UP_URL&&UP_TOK);
+async function rcmd(cmd){
+  const r=await fetch(UP_URL,{method:"POST",headers:{Authorization:"Bearer "+UP_TOK,"Content-Type":"application/json"},body:JSON.stringify(cmd)});
+  const j=await r.json();if(!r.ok||j.error)throw new Error(j.error||("HTTP "+r.status));return j.result}
+const imgCache=new Map();
+async function getImg(k){
+  if(imgCache.has(k))return imgCache.get(k);
+  let v=null;
+  if(REMOTE){try{const r=await rcmd(["GET","nc:img:"+k]);v=r?JSON.parse(r):null}catch(e){return null}}
+  else v=db.imgs[k]||null;
+  if(v)imgCache.set(k,v);return v}
+async function putImg(k,v){
+  imgCache.set(k,v);
+  if(REMOTE){for(let i=0;i<3;i++){try{await rcmd(["SET","nc:img:"+k,JSON.stringify(v)]);return}catch(e){await new Promise(r=>setTimeout(r,500))}}console.error("putImg échec",k)}
+  else{db.imgs[k]=v;save()}}
+function normalize(){db.users=db.users||{};db.sessions=db.sessions||{};db.imgs=db.imgs||{};
+  for(const k in db.users){const u=db.users[k];u.rr=u.rr||0;u.best=u.best||0;u.wins=u.wins||0;u.losses=u.losses||0}}
+let loaded=false;
+async function init(){
+  try{db=JSON.parse(fs.readFileSync(DB_FILE,"utf8"))}catch(e){}
+  normalize();
+  if(REMOTE){
+    let r=null,ok=false;
+    for(let i=0;i<5&&!ok;i++){try{r=await rcmd(["GET","nc:main"]);ok=true}catch(e){console.error("Upstash KO:",e.message);await new Promise(x=>setTimeout(x,2000))}}
+    if(!ok){console.error("Upstash injoignable : arrêt pour ne pas écraser les données.");process.exit(1)}
+    if(r){const m=JSON.parse(r);db={users:m.users||{},sessions:m.sessions||{},imgs:db.imgs||{}};console.log("Données chargées depuis Upstash :",Object.keys(db.users).length,"comptes")}
+    else console.log("Upstash vide : migration des données locales.");
+    normalize();
+    for(const k of Object.keys(db.imgs)){await putImg(k,db.imgs[k])} // migration des images du fichier local
+    db.imgs={};
+  }
+  loaded=true;saveNow();
+}
+let saveT=null,saving=false,again=false;
+async function saveNow(){
+  if(!loaded)return;
+  if(REMOTE){
+    if(saving){again=true;return}
+    saving=true;
+    try{await rcmd(["SET","nc:main",JSON.stringify({users:db.users,sessions:db.sessions})])}catch(e){console.error("save Upstash:",e.message);again=true}
+    saving=false;if(again){again=false;setTimeout(saveNow,2000)}
+  }else{const tmp=DB_FILE+".tmp";fs.writeFileSync(tmp,JSON.stringify(db));fs.renameSync(tmp,DB_FILE)}
+}
+function save(){if(saveT)return;saveT=setTimeout(()=>{saveT=null;saveNow()},300)}
 const sha=s=>crypto.createHash("sha256").update(s).digest("hex");
 const key=p=>p.toLowerCase();
 function hashPw(pw,salt=crypto.randomBytes(16).toString("hex")){return{salt,hash:crypto.scryptSync(pw,salt,32).toString("hex")}}
@@ -56,15 +96,16 @@ const server=http.createServer((req,res)=>{
   const url=new URL(req.url,"http://x");
   if(url.pathname==="/health"){res.end("ok");return}
   let m=/^\/img\/(av|coin|cape)\/([A-Za-z0-9_-]{3,16})$/.exec(url.pathname);
-  if(m){const im=db.imgs[key(m[2])+":"+m[1]];
+  if(m){getImg(key(m[2])+":"+m[1]).then(im=>{
     if(!im){res.writeHead(404);res.end();return}
     res.writeHead(200,{"Content-Type":im.m,"Cache-Control":"public,max-age=31536000,immutable","Access-Control-Allow-Origin":"*","Cross-Origin-Resource-Policy":"cross-origin","X-Content-Type-Options":"nosniff","Content-Security-Policy":"default-src 'none'"});
-    res.end(Buffer.from(im.b,"base64"));return}
+    res.end(Buffer.from(im.b,"base64"))});return}
   if(url.pathname.startsWith("/admin/")){
     const k=url.searchParams.get("key")||"";
     const ok=ADMIN_KEY&&k.length===ADMIN_KEY.length&&crypto.timingSafeEqual(Buffer.from(k),Buffer.from(ADMIN_KEY));
     if(!ok){res.writeHead(403);res.end("no");return}
     const p=key(url.searchParams.get("pseudo")||"");
+    if(url.pathname==="/admin/backup"){res.writeHead(200,{"Content-Type":"application/json","Content-Disposition":"attachment; filename=nocoin-backup.json"});res.end(JSON.stringify({users:db.users,sessions:db.sessions}));return}
     if(url.pathname==="/admin/flags"){const o=Object.values(db.users).filter(u=>u.flags||u.banned).map(u=>({pseudo:u.pseudo,flags:u.flags,banned:!!u.banned,log:u.log}));res.writeHead(200,{"Content-Type":"application/json"});res.end(JSON.stringify(o,null,1));return}
     const u=db.users[p];if(!u){res.writeHead(404);res.end("inconnu");return}
     if(url.pathname==="/admin/ban"){u.banned=true;u.bannedAt=Date.now();const w=online.get(p);if(w){send(w,{t:"banned"});w.close()}}
@@ -249,15 +290,15 @@ wss.on("connection",(ws,req)=>{
         const n=Date.now();ws.imgN=(ws.imgN||[]).filter(t=>n-t<60000);if(ws.imgN.length>=6)return send(ws,{t:"err",msg:"Trop d'envois, réessaie dans une minute."});ws.imgN.push(n);
         if(!["av","coin","cape"].includes(d.kind))return;
         const im=imgParse(d.data);if(!im)return send(ws,{t:"err",msg:"Image refusée (PNG/JPEG/WebP, 60 Ko max)."});
-        db.imgs[ws.user+":"+d.kind]=im;
+        putImg(ws.user+":"+d.kind,im);
         if(d.kind==="av")u.avv=n;else if(d.kind==="coin")u.cnv=n;else u.cpv=n;
         save();send(ws,{t:"me",me:pub(u)});break}
       case"cos":{
         if(!ws.user)return;const u=db.users[ws.user];
         const f=String(d.font),c=String(d.coin),k=String(d.cape);
         if(!FONTS.includes(f)||!COINS.includes(c)||!CAPES.includes(k))return;
-        if(c==="custom"&&!db.imgs[ws.user+":coin"])return send(ws,{t:"err",msg:"Importe d'abord une image de pièce."});
-        if(k==="custom"&&!db.imgs[ws.user+":cape"])return send(ws,{t:"err",msg:"Importe d'abord une image de cape."});
+        if(c==="custom"&&!u.cnv)return send(ws,{t:"err",msg:"Importe d'abord une image de pièce."});
+        if(k==="custom"&&!u.cpv)return send(ws,{t:"err",msg:"Importe d'abord une image de cape."});
         u.font=f;u.coin=c;u.cape=k;save();send(ws,{t:"me",me:pub(u)});break}
       case"ac":{ // rapport client : journalisé seulement (faux positifs possibles), jamais de ban auto
         if(!ws.user)return;const u=db.users[ws.user];
@@ -272,4 +313,4 @@ wss.on("connection",(ws,req)=>{
 });
 setInterval(()=>{for(const ws of wss.clients){if(!ws.isAlive){ws.terminate();continue}ws.isAlive=false;ws.ping()}},25000);
 setInterval(()=>{const lim=Date.now()-365*864e5;let c=0;for(const k in db.sessions)if(db.sessions[k].at<lim){delete db.sessions[k];c++}if(c)save()},36e5);
-server.listen(PORT,()=>console.log("NoCoin Surfer sur http://localhost:"+PORT));
+init().then(()=>server.listen(PORT,()=>console.log("NoCoin Surfer sur http://localhost:"+PORT))).catch(e=>{console.error(e);process.exit(1)});
