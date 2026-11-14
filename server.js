@@ -8,6 +8,7 @@ const WINS_NEEDED=2;
 /* ---------- Stockage ---------- */
 let db={users:{},sessions:{}};
 try{db=JSON.parse(fs.readFileSync(DB_FILE,"utf8"))}catch(e){}
+for(const k in db.users){const u=db.users[k];u.rr=u.rr||0;u.best=u.best||0;u.wins=u.wins||0;u.losses=u.losses||0}
 let saveT=null;
 function save(){if(saveT)return;saveT=setTimeout(()=>{saveT=null;const tmp=DB_FILE+".tmp";fs.writeFileSync(tmp,JSON.stringify(db));fs.renameSync(tmp,DB_FILE)},300)}
 const sha=s=>crypto.createHash("sha256").update(s).digest("hex");
@@ -15,7 +16,9 @@ const key=p=>p.toLowerCase();
 function hashPw(pw,salt=crypto.randomBytes(16).toString("hex")){return{salt,hash:crypto.scryptSync(pw,salt,32).toString("hex")}}
 function checkPw(pw,u){const h=crypto.scryptSync(pw,u.salt,32);return crypto.timingSafeEqual(h,Buffer.from(u.hash,"hex"))}
 function newSession(pseudo){const tok=crypto.randomBytes(32).toString("hex");db.sessions[sha(tok)]={pseudo:key(pseudo),at:Date.now()};save();return tok}
-const pub=u=>({pseudo:u.pseudo,wins:u.wins,losses:u.losses,best:u.best})
+const pub=u=>({pseudo:u.pseudo,wins:u.wins,losses:u.losses,best:u.best,rr:u.rr})
+function rrChange(win,my,op){const d=(op-my)*0.08;return win?Math.round(Math.min(40,Math.max(12,24+d))):-Math.round(Math.min(32,Math.max(10,20-d)))}
+function bump(uk,t){const u=db.users[uk];if(!u)return false;t=Math.round(t*100)/100;if(t>u.best){u.best=t;save();return true}return false}
 
 /* ---------- HTTP ---------- */
 const HTML=path.join(__dirname,"index.html");
@@ -68,11 +71,16 @@ function endRound(m){
 }
 function endMatch(m,winner,forfeit){
   if(m.over)return;m.over=true;
+  const us=m.p.map(ws=>db.users[ws.user]);
+  const r0=us.map(u=>u?u.rr:0);
   m.p.forEach((ws,i)=>{
-    const u=db.users[ws.user];
-    if(u){if(i===winner)u.wins++;else u.losses++}
+    const u=us[i];let rr=null;
+    if(u){
+      const win=i===winner;if(win)u.wins++;else u.losses++;
+      const before=u.rr;u.rr=Math.max(0,before+rrChange(win,r0[i],r0[1-i]));rr={delta:u.rr-before,now:u.rr};
+    }
     ws.match=null;
-    send(ws,{t:"matchEnd",win:i===winner,forfeit,score:[m.score[i],m.score[1-i]],me:u&&pub(u)});
+    send(ws,{t:"matchEnd",win:i===winner,forfeit,score:[m.score[i],m.score[1-i]],me:u&&pub(u),rr});
   });
   save();
 }
@@ -107,7 +115,7 @@ wss.on("connection",(ws,req)=>{
         if(!PSEUDO_RE.test(p))return send(ws,{t:"err",msg:"Pseudo : 3-16 caractères (lettres, chiffres, _ -)."});
         if(pw.length<4||pw.length>100)return send(ws,{t:"err",msg:"Mot de passe : 4 caractères minimum."});
         if(db.users[key(p)])return send(ws,{t:"err",msg:"Ce pseudo est déjà pris."});
-        const u={pseudo:p,...hashPw(pw),wins:0,losses:0,best:0,created:Date.now()};
+        const u={pseudo:p,...hashPw(pw),wins:0,losses:0,best:0,rr:0,created:Date.now()};
         db.users[key(p)]=u;save();login(ws,u,newSession(p));break}
       case"login":{
         if(limited(ip))return send(ws,{t:"err",msg:"Trop de tentatives, réessaie dans une minute."});
@@ -138,10 +146,24 @@ wss.on("connection",(ws,req)=>{
         const m=ws.match;if(!m||m.phase!=="play"||m.res[ws.idx]!=null)return;
         let t=Number(d.time);if(!isFinite(t)||t<0)return;
         const max=(Date.now()-m.goAt)/1000+1.5;if(t>max)t=max; // anti-triche basique
-        m.res[ws.idx]=t;
+        m.res[ws.idx]=t;bump(ws.user,t);
         send(m.p[1-ws.idx],{t:"opp",time:t,dead:true});
         if(m.res[0]!=null&&m.res[1]!=null)endRound(m);
         break}
+      case"solostart":ws.soloAt=Date.now();break;
+      case"score":{
+        if(!ws.user||!ws.soloAt||ws.match)return;
+        let t=Number(d.time);if(!isFinite(t)||t<=0)return;
+        const max=(Date.now()-ws.soloAt)/1000+1.5;ws.soloAt=0;if(t>max)t=max;
+        const rec=bump(ws.user,t);send(ws,{t:"scoreRes",best:db.users[ws.user].best,record:rec});break}
+      case"lb":{
+        const n=Date.now();if(ws.lbAt&&n-ws.lbAt<700)return;ws.lbAt=n;
+        const mode=d.mode==="normal"?"normal":"ranked";
+        const arr=Object.entries(db.users).filter(([k,u])=>mode==="ranked"?(u.wins+u.losses)>0:u.best>0);
+        arr.sort(mode==="ranked"?((a,b)=>b[1].rr-a[1].rr||b[1].wins-a[1].wins):((a,b)=>b[1].best-a[1].best));
+        const rows=arr.slice(0,50).map(([k,u])=>({pseudo:u.pseudo,rr:u.rr,wins:u.wins,losses:u.losses,best:u.best}));
+        const pos=ws.user?arr.findIndex(([k])=>k===ws.user)+1:0;
+        send(ws,{t:"lb",mode,rows,pos});break}
       case"leave":forfeit(ws);break;
     }
   });

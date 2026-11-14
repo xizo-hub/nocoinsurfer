@@ -1,11 +1,9 @@
-# NoCoin Surfer — comptes + 1v1 BO3
+# NoCoin Surfer — comptes, 1v1 BO3, RR, classement
 
-Nécessite Node 18+ et un hébergeur qui supporte les WebSockets (Render, Railway, Fly.io, VPS…).
+Serveur (Render, Railway, VPS…) : `npm install` puis `npm start`.
+Netlify : dépose seulement `index.html` (SERVER_URL pointe déjà vers wss://nocoinsurfer.onrender.com).
 
-    npm install
-    npm start        # http://localhost:3000
-
-- `index.html` : le jeu (servi par `server.js`, même domaine).
-- Si le jeu est hébergé ailleurs : mets `const SERVER_URL="wss://ton-serveur"` en haut du dernier `<script>` d'`index.html`.
-- Les comptes sont stockés dans `data.json` (mots de passe hashés scrypt). Sur un hébergeur à disque éphémère, monte un volume persistant et définis `DB_FILE=/chemin/data.json`.
-- Reconnexion auto : un token est gardé dans le navigateur (localStorage).
+- Ranked : classement par RR (1v1 BO3). Victoire +12 à +40, défaite -10 à -32, minimum 0.
+- Normal : classement par meilleur temps (solo + manches de duel).
+- Rangs : Bronze 0 · Argent 200 · Or 400 · Platine 700 · Diamant 1000 · Maître 1400.
+- Données dans `data.json` (variable `DB_FILE` pour changer l'emplacement).
